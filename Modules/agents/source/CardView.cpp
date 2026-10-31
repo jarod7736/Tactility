@@ -132,23 +132,44 @@ CardKey cardKeyAction(uint32_t key, const Card* card, bool followingLatest) {
     return {};
 }
 
+bool cardKeyBlocked(CardAction action, bool dialogPending, bool respondInFlight) {
+    switch (action) {
+        case CardAction::Prompt:
+        case CardAction::TypeAnswer:
+        case CardAction::Stop:
+            return dialogPending;
+        case CardAction::Respond:
+            return respondInFlight;
+        default:
+            return false;
+    }
+}
+
+OlderResult classifyOlder(const std::optional<std::vector<Card>>& cards) {
+    if (!cards) return OlderResult::Failed;
+    return cards->empty() ? OlderResult::StartReached : OlderResult::Prepend;
+}
+
 // endregion
 
 void refreshCardView(AgentState& state) {
-    if (!isShown(state) || state.mode != AgentState::Mode::Card) return;
+    // viewMode/bodyLabel: openSession() switches mode before the async rebuild creates the card widgets
+    if (!isShown(state) || state.mode != AgentState::Mode::Card || state.viewMode != AgentState::Mode::Card || state.bodyLabel == nullptr) return;
     const Card* current = state.window.current();
     lv_label_set_text(state.headerLeft, cardHeader(state.name, state.session.title, state.window.position(), state.window.size()).c_str());
     lv_label_set_text(state.headerRight, runStateWord(state.runState));
-    if (current != nullptr) {
-        lv_label_set_text(state.bodyLabel, cardBodyText(*current).c_str());
-    } else {
-        lv_label_set_text(state.bodyLabel, state.watching ? "Waiting for cards..." : "Not connected");
-    }
     int seq = current != nullptr ? current->seq : -1;
+    bool resolved = current != nullptr && current->resolved;
+    if (current == nullptr) {
+        lv_label_set_text(state.bodyLabel, state.watching ? "Waiting for cards..." : "Not connected");
+    } else if (seq != state.shownSeq || resolved != state.shownResolved) {
+        lv_label_set_text(state.bodyLabel, cardBodyText(*current).c_str());
+    }
     if (seq != state.shownSeq) {
-        state.shownSeq = seq;
         lv_obj_scroll_to_y(state.content, 0, LV_ANIM_OFF);
     }
+    state.shownSeq = seq;
+    state.shownResolved = resolved;
     lv_label_set_text(state.footer, footerHint(current).c_str());
     updateBanner(state);
 }
@@ -171,13 +192,15 @@ static void onCard(AgentState& state, const Card& card) {
     auto change = state.window.apply(card);
     if (change == CardWindow::Change::Reset) {
         state.runStateSeq = 0;
+        state.historyStart = false;
+        state.shownSeq = -2; // same seq may now be a different card
     }
     state.runState = nextRunState(card, state.runState, state.runStateSeq);
     refreshCardView(state);
 }
 
 static void startWatching(const StatePtr& state) {
-    if (state->client == nullptr) return;
+    if (state->client == nullptr || state->destroyed) return;
     std::weak_ptr<AgentState> weak = state;
     state->client->watch(state->backend, state->session.id, 0, [weak](const Card& card) {
         if (auto locked = weak.lock()) onCard(*locked, card);
@@ -193,6 +216,7 @@ void stopWatching(AgentState& state) {
 }
 
 void openSession(const StatePtr& state, BridgeClient::SessionSummary session) {
+    if (state->destroyed) return; // e.g. createSession finished after the app exited
     stopWatching(*state);
     state->mode = AgentState::Mode::Card;
     state->session = std::move(session);
@@ -200,6 +224,8 @@ void openSession(const StatePtr& state, BridgeClient::SessionSummary session) {
     state->runState = state->session.state;
     state->runStateSeq = 0;
     state->fetchingOlder = false;
+    state->historyStart = false;
+    state->respondingSeq = -1;
     startWatching(state);
     rebuildLater(state);
 }
@@ -215,6 +241,7 @@ void closeSession(const StatePtr& state) {
 static void jumpToLatest(const StatePtr& state) {
     state->window.clear();
     state->runStateSeq = 0;
+    state->historyStart = false;
     stopWatching(*state);
     startWatching(state);
 }
@@ -222,27 +249,44 @@ static void jumpToLatest(const StatePtr& state) {
 static void fetchOlder(const StatePtr& state) {
     int before = state->window.oldestSeq();
     if (state->fetchingOlder || before <= 0 || state->client == nullptr) return; // never send before=-1
+    if (state->historyStart) {
+        showToast(*state, "No older cards");
+        updateBanner(*state);
+        return;
+    }
     state->fetchingOlder = true;
     auto client = state->client;
     auto backend = state->backend;
     auto sid = state->session.id;
-    auto cards = std::make_shared<std::vector<Card>>();
-    runRequest(state, [client, backend, sid, before, cards] {
+    auto cards = std::make_shared<std::optional<std::vector<Card>>>();
+    auto error = std::make_shared<std::string>();
+    runRequest(state, [client, backend, sid, before, cards, error] {
         *cards = client->older(backend, sid, before);
-    }, [state, sid, before, cards] {
+        if (!*cards) {
+            *error = client->lastError();
+            if (error->empty()) *error = client->statusMessage();
+        }
+    }, [state, sid, before, cards, error] {
         state->fetchingOlder = false;
         if (state->mode != AgentState::Mode::Card || state->session.id != sid || state->window.oldestSeq() != before) return;
-        if (cards->empty()) {
-            showToast(*state, "No older cards");
-        } else {
-            state->window.prependOlder(std::move(*cards));
-            state->window.prev();
+        switch (classifyOlder(*cards)) {
+            case OlderResult::Failed:
+                showToast(*state, *error); // not remembered: Fn+; retries
+                break;
+            case OlderResult::StartReached:
+                state->historyStart = true;
+                showToast(*state, "No older cards");
+                break;
+            case OlderResult::Prepend:
+                state->window.prependOlder(std::move(**cards));
+                state->window.prev();
+                break;
         }
         refreshCardView(*state);
     });
 }
 
-static void sendRequest(const StatePtr& state, std::function<bool(BridgeClient&)> request, const char* fallbackError) {
+static void sendRequest(const StatePtr& state, std::function<bool(BridgeClient&)> request, const char* fallbackError, std::function<void()> onDone = {}) {
     if (state->client == nullptr) return;
     auto client = state->client;
     auto error = std::make_shared<std::string>();
@@ -251,7 +295,8 @@ static void sendRequest(const StatePtr& state, std::function<bool(BridgeClient&)
             *error = client->lastError();
             if (error->empty()) *error = fallbackError;
         }
-    }, [state, error] {
+    }, [state, error, onDone] {
+        if (onDone) onDone();
         if (!error->empty()) {
             showToast(*state, *error);
             updateBanner(*state);
@@ -259,15 +304,21 @@ static void sendRequest(const StatePtr& state, std::function<bool(BridgeClient&)
     });
 }
 
+/** Call with the LVGL lock held. */
 static void respond(const StatePtr& state, std::string backend, std::string sid, int seq, std::optional<std::string> choice, std::optional<std::string> answer) {
+    state->respondingSeq = seq;
     sendRequest(state, [backend, sid, seq, choice, answer](BridgeClient& client) {
         return client.respond(backend, sid, seq, choice, answer);
-    }, "Could not respond");
+    }, "Could not respond", [state, seq] {
+        if (state->respondingSeq == seq) state->respondingSeq = -1;
+    });
 }
 
 void handleCardKey(const StatePtr& state, uint32_t key) {
     const Card* current = state->window.current();
     auto action = cardKeyAction(key, current, state->window.followingLatest());
+    bool respondInFlight = current != nullptr && state->respondingSeq == current->seq;
+    if (cardKeyBlocked(action.action, state->dialog != AgentState::Dialog::None, respondInFlight)) return;
     switch (action.action) {
         case CardAction::Prev:
             if (!state->window.prev()) fetchOlder(state);
@@ -324,7 +375,10 @@ void handleDialogResult(const StatePtr& state, bool ok, std::string text, int32_
             break;
         case AgentState::Dialog::Answer:
             if (text.empty()) return;
-            respond(state, backend, sid, answerSeq, std::nullopt, text);
+            if (tt::lvgl::lock(portMAX_DELAY)) {
+                respond(state, backend, sid, answerSeq, std::nullopt, text);
+                tt::lvgl::unlock();
+            }
             break;
         case AgentState::Dialog::Stop:
             if (buttonIndex != 0) return; // 0 = Yes

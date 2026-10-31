@@ -7,8 +7,10 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace agents {
 
@@ -59,6 +61,18 @@ struct CardKey {
 /** Card screen key mapping. key is an LVGL key code or a character. Fn+, / Fn+/ (LV_KEY_LEFT/RIGHT) map to
  *  None: LVGL scrolls the focused card body itself. */
 CardKey cardKeyAction(uint32_t key, const Card* card, bool followingLatest);
+
+/** Key repeat guard: P/T/S are ignored while a dialog is pending, Respond while a respond request for the
+ *  current card is in flight. */
+bool cardKeyBlocked(CardAction action, bool dialogPending, bool respondInFlight);
+
+enum class OlderResult { Prepend, StartReached, Failed };
+
+/** nullopt (request failed) is Failed and may be retried; an empty list means the start of history. */
+OlderResult classifyOlder(const std::optional<std::vector<Card>>& cards);
+
+/** Internal heap thresholds for shrinking the card window to 10: free < 30 KB or largest block < 16 KB. */
+bool isLowMemory(size_t freeBytes, size_t largestBlock);
 
 enum class ListAction { None, Prev, Next, Open, NewSession, PickModel, Back };
 

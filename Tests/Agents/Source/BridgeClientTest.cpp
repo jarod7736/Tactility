@@ -379,8 +379,9 @@ TEST_CASE("BridgeClient: sessions, createSession and older hit the right paths")
     REQUIRE(created.has_value());
     CHECK_EQ(created->id, "n");
     auto cards = client.older("hermes", "a", 5);
-    REQUIRE_EQ(cards.size(), 2);
-    CHECK_EQ(cards[0].seq, 3);
+    REQUIRE(cards.has_value());
+    REQUIRE_EQ(cards->size(), 2);
+    CHECK_EQ((*cards)[0].seq, 3);
     auto requests = server.requests();
     CHECK(requests[0].starts_with("GET /v1/hermes/sessions?limit=10 HTTP/1.0\r\n"));
     CHECK(requests[1].starts_with("POST /v1/hermes/sessions HTTP/1.0\r\n"));
@@ -408,6 +409,19 @@ TEST_CASE("BridgeClient: a 5xx response is Offline") {
     CHECK(client.sessions("hermes").empty());
     CHECK(client.status() == BridgeClient::Status::Offline);
     CHECK_EQ(client.lastError(), "Backend unreachable");
+}
+
+TEST_CASE("BridgeClient: older distinguishes failure from no older cards") {
+    CannedServer server({
+        { jsonResponse(502, "{\"detail\":\"backend unreachable\"}", "Bad Gateway") },
+        { jsonResponse(200, "[]") },
+    });
+    BridgeClient client;
+    configureLocal(client, server.port);
+    CHECK_FALSE(client.older("hermes", "a", 5).has_value());
+    auto none = client.older("hermes", "a", 5);
+    REQUIRE(none.has_value());
+    CHECK(none->empty());
 }
 
 TEST_CASE("BridgeClient: 404 on the stream sets Session not found and does not retry") {

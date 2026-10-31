@@ -328,9 +328,10 @@ bool BridgeClient::setModel(const std::string& backend, const std::string& label
     return response && response->status == 200;
 }
 
-std::vector<Card> BridgeClient::older(const std::string& backend, const std::string& sid, int beforeSeq) {
+std::optional<std::vector<Card>> BridgeClient::older(const std::string& backend, const std::string& sid, int beforeSeq) {
     auto response = call("GET", std::format("/v1/{}/sessions/{}/cards?before={}&limit=10", backend, sid, beforeSeq));
-    return response && response->status == 200 ? parseCards(response->body) : std::vector<Card>();
+    if (!response || response->status != 200) return std::nullopt;
+    return parseCards(response->body);
 }
 
 bool BridgeClient::prompt(const std::string& backend, const std::string& sid, const std::string& text) {

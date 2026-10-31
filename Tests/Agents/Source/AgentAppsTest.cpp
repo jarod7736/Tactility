@@ -189,3 +189,28 @@ TEST_CASE("list keys") {
     CHECK(listKeyAction('M') == ListAction::PickModel);
     CHECK(listKeyAction('x') == ListAction::None);
 }
+
+TEST_CASE("card key repeat guard") {
+    CHECK(cardKeyBlocked(CardAction::Prompt, true, false));
+    CHECK(cardKeyBlocked(CardAction::TypeAnswer, true, false));
+    CHECK(cardKeyBlocked(CardAction::Stop, true, false));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Prompt, false, true));
+    CHECK(cardKeyBlocked(CardAction::Respond, false, true));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Respond, true, false));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Next, true, true));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Prev, true, true));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Back, true, true));
+}
+
+TEST_CASE("older fetch outcome") {
+    CHECK(classifyOlder(std::nullopt) == OlderResult::Failed);
+    CHECK(classifyOlder(std::vector<Card>()) == OlderResult::StartReached);
+    CHECK(classifyOlder(std::vector<Card> { mk(3, CardKind::Text) }) == OlderResult::Prepend);
+}
+
+TEST_CASE("low memory thresholds") {
+    CHECK_FALSE(isLowMemory(80 * 1024, 40 * 1024));
+    CHECK_FALSE(isLowMemory(30 * 1024, 16 * 1024));
+    CHECK(isLowMemory(30 * 1024 - 1, 40 * 1024));
+    CHECK(isLowMemory(80 * 1024, 16 * 1024 - 1));
+}

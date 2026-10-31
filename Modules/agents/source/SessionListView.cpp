@@ -88,7 +88,8 @@ static void updateSelection(AgentState& state) {
 }
 
 void refreshSessionList(AgentState& state) {
-    if (!isShown(state) || state.mode != AgentState::Mode::List) return;
+    // closeSession() switches mode before the async rebuild replaces the card widgets
+    if (!isShown(state) || state.mode != AgentState::Mode::List || state.viewMode != AgentState::Mode::List) return;
 
     lv_obj_clean(state.content);
     bool rows = false;

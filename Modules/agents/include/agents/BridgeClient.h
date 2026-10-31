@@ -65,15 +65,15 @@ public:
     std::optional<SessionSummary> createSession(const std::string& backend);
     std::optional<ModelList> models(const std::string& backend);
     bool setModel(const std::string& backend, const std::string& label);
-    /** Up to 10 cards older than beforeSeq, oldest first. */
-    std::vector<Card> older(const std::string& backend, const std::string& sid, int beforeSeq);
+    /** Up to 10 cards older than beforeSeq, oldest first. nullopt when the request fails (empty means none older). */
+    std::optional<std::vector<Card>> older(const std::string& backend, const std::string& sid, int beforeSeq);
     /** False on 409 with lastError() "Run in progress". */
     bool prompt(const std::string& backend, const std::string& sid, const std::string& text);
     bool respond(const std::string& backend, const std::string& sid, int seq, std::optional<std::string> choice, std::optional<std::string> answer);
     bool stop(const std::string& backend, const std::string& sid);
 
     /** Stream cards after afterSeq on a task with a 6 KB stack, replacing any previous watch.
-     *  Call watch() and unwatch() only on the LVGL thread with the LVGL lock held: onCard runs on the main
+     *  Call watch() and unwatch() with the LVGL lock held (from any thread): onCard runs on the main
      *  dispatcher under the LVGL lock, and that is what guarantees it never runs after unwatch() returns.
      *  A line over 2 KB arrives as a local Error card "card too large" (Card::local, see Card.h).
      *  At most 7 cards wait in the dispatcher queue; the stream pauses until the main task catches up.

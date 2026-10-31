@@ -13,6 +13,10 @@
 
 #include <format>
 
+#ifdef ESP_PLATFORM
+#include <esp_heap_caps.h>
+#endif
+
 namespace agents {
 
 constexpr uint32_t TOAST_MILLIS = 3000;
@@ -62,8 +66,24 @@ void updateBanner(AgentState& state) {
     }
 }
 
+bool isLowMemory(size_t freeBytes, size_t largestBlock) {
+    return freeBytes < 30 * 1024 || largestBlock < 16 * 1024;
+}
+
+static void checkMemory(AgentState& state) {
+#ifdef ESP_PLATFORM
+    if (state.lowMemory) return;
+    if (isLowMemory(heap_caps_get_free_size(MALLOC_CAP_INTERNAL), heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL))) {
+        state.lowMemory = true; // one-way for this app instance
+        state.window.setCapacity(10);
+        refreshCardView(state);
+    }
+#endif
+}
+
 static void onTimer(lv_timer_t* timer) {
     auto* state = static_cast<AgentState*>(lv_timer_get_user_data(timer));
+    checkMemory(*state);
     updateBanner(*state);
 }
 
@@ -158,6 +178,7 @@ static void buildSkeleton(AgentState& state) {
 
 void buildView(const StatePtr& state) {
     state->generation++;
+    state->viewMode = state->mode;
     buildSkeleton(*state);
     if (state->mode == AgentState::Mode::List) {
         buildSessionList(state);
@@ -230,6 +251,7 @@ public:
     void onDestroy(tt::app::AppContext& context) override {
         // watch()/unwatch() must run with the LVGL lock held (BridgeClient.h)
         if (tt::lvgl::lock(portMAX_DELAY)) {
+            state->destroyed = true;
             stopWatching(*state);
             tt::lvgl::unlock();
         }

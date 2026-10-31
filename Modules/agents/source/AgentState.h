@@ -26,6 +26,8 @@ struct AgentState : std::enable_shared_from_this<AgentState> {
     std::shared_ptr<BridgeClient> client; // nullptr when the service is not running
 
     Mode mode = Mode::List;
+    Mode viewMode = Mode::List; // the mode the current widgets were built for
+    bool destroyed = false;     // set in onDestroy: late request results must not start a watch
     Dialog dialog = Dialog::None;
     int answerSeq = -1;
 
@@ -61,7 +63,11 @@ struct AgentState : std::enable_shared_from_this<AgentState> {
     int runStateSeq = 0;
     bool watching = false;
     bool fetchingOlder = false;
-    int shownSeq = -2; // seq of the card in the body label, to reset scroll on change
+    bool historyStart = false; // a successful empty older() response: nothing older to fetch
+    int respondingSeq = -1;    // seq with a respond request in flight (key repeat guard)
+    bool lowMemory = false;    // window shrunk to 10 (one-way)
+    int shownSeq = -2;         // (seq, resolved) of the card in the body label: skip identical updates
+    bool shownResolved = false;
 };
 
 using StatePtr = std::shared_ptr<AgentState>;
