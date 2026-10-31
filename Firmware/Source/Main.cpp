@@ -1,4 +1,5 @@
 #include <Tactility/Tactility.h>
+#include <agents/BridgeClient.h>
 
 #include <tactility/driver.h>
 #include <devicetree.h>
@@ -20,7 +21,8 @@ void app_main() {
          * Auto-select a board based on the ./sdkconfig.board.* file
          * that you copied to ./sdkconfig before you opened this project.
          */
-        .hardware = &hardwareConfiguration
+        .hardware = &hardwareConfiguration,
+        .services = { &agents::bridgeClientManifest }
     };
 
 #ifdef ESP_PLATFORM

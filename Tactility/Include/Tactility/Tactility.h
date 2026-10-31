@@ -7,6 +7,8 @@
 #include <Tactility/hal/Configuration.h>
 #include <Tactility/service/ServiceManifest.h>
 
+#include <vector>
+
 extern "C" {
 struct DtsDevice;
 }
@@ -19,6 +21,8 @@ namespace tt {
 struct Configuration {
     /** HAL configuration (drivers) */
     const hal::Configuration* hardware = nullptr;
+    /** Extra services from modules outside Tactility, started after the system UI services */
+    std::vector<const service::ServiceManifest*> services = {};
 };
 
 /**

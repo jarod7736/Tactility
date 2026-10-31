@@ -274,6 +274,9 @@ static void registerAndStartSecondaryServices() {
 #if TT_FEATURE_SCREENSHOT_ENABLED
     addService(service::screenshot::manifest);
 #endif
+    for (const auto* manifest : config_instance->services) {
+        addService(*manifest);
+    }
 }
 
 static void registerAndStartPrimaryServices() {
