@@ -212,8 +212,11 @@ bool BridgeClient::onStart(tt::service::ServiceContext& context) {
         }
         setStatus(Status::NotConfigured);
     }
-    auto current = status_.load();
-    tt::lvgl::statusbar_icon_set_visibility(statusbarIcon_, current == Status::NotConfigured || current == Status::Unauthorized);
+    // All statusbar slots can already be taken (STATUSBAR_ICON_LIMIT); then there is no icon to update.
+    if (statusbarIcon_ >= 0) {
+        auto current = status_.load();
+        tt::lvgl::statusbar_icon_set_visibility(statusbarIcon_, current == Status::NotConfigured || current == Status::Unauthorized);
+    }
     return true;
 }
 
