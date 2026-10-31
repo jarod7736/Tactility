@@ -23,6 +23,9 @@ struct Card {
     bool truncated = false;
     bool resolved = false;
     int64_t ts = 0;
+    /** Made on the device, not by the bridge (e.g. "card too large"). The UI shows a local card as a
+     *  transient banner/toast and never passes it to CardWindow::apply: its seq is not a bridge seq. */
+    bool local = false;
 };
 
 /** Parse one card JSON object. Returns nullopt on invalid JSON, missing seq/kind, or unknown kind.

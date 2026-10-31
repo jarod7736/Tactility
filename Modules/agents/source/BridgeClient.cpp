@@ -24,6 +24,7 @@ namespace agents {
 constexpr auto SERVICE_ID = "BridgeClient";
 constexpr size_t WATCH_STACK_SIZE = 6144;
 constexpr size_t SSE_MAX_LINE = 2048;
+constexpr int MAX_PENDING_CARDS = 6;
 
 namespace {
 
@@ -141,6 +142,23 @@ std::vector<Card> parseCards(std::string_view json) {
     return result;
 }
 
+std::optional<Card> cardFromEvent(const SseEvent& event, int& afterSeq) {
+    if (event.type == SseEvent::Type::Oversize) {
+        Card card;
+        card.kind = CardKind::Error;
+        card.title = "card too large";
+        card.local = true;
+        return card;
+    }
+    auto card = parseCard(event.data);
+    // seq 0 is the bridge's "Skipped" gap card: deliver it, but never resume from it.
+    // A lower unresolved seq means the bridge restarted and numbering began again.
+    if (card && card->seq > 0 && (card->seq > afterSeq || !card->resolved)) {
+        afterSeq = card->seq;
+    }
+    return card;
+}
+
 int nextBackoffSeconds(int attempt) {
     constexpr int DELAYS[] = { 1, 2, 4, 8, 15 };
     constexpr int LAST = static_cast<int>(std::size(DELAYS)) - 1;
@@ -148,7 +166,7 @@ int nextBackoffSeconds(int attempt) {
 }
 
 std::string errorMessage(int status, std::string_view body) {
-    if (status == 0) return "Bridge offline";
+    if (status == 0) return "Bridge offline, retrying";
     if (status == 401) return "Check bridge.properties";
     if (status == 502) return "Backend unreachable";
     auto root = parseJson(body);
@@ -175,6 +193,7 @@ struct BridgeClient::Watch {
     int afterSeq;
     std::function<void(const Card&)> onCard;
     std::atomic<bool> stopping { false };
+    std::atomic<int> pending { 0 }; // cards dispatched but not yet run on the main task
 };
 
 BridgeClient::~BridgeClient() {
@@ -230,9 +249,9 @@ const char* BridgeClient::statusMessage() const {
             return toMessage(configError_);
         }
         case Status::NoNetwork:
-            return "No Wi-Fi";
+            return "No network";
         case Status::Offline:
-            return "Bridge offline";
+            return "Bridge offline, retrying";
         case Status::Unauthorized:
             return "Check bridge.properties";
     }
@@ -269,7 +288,7 @@ std::optional<HttpResponse> BridgeClient::call(std::string_view method, const st
     HttpClient client(config->host, config->port, config->token);
     auto response = client.request(method, path, body);
     int status = response ? response->status : client.lastStatus();
-    if (status == 0) {
+    if (status == 0 || status >= 500) {
         setStatus(Status::Offline);
     } else if (status == 401) {
         setStatus(Status::Unauthorized);
@@ -362,7 +381,13 @@ void BridgeClient::unwatch() {
 }
 
 int32_t BridgeClient::runWatch(const std::shared_ptr<Watch>& watch) {
-    auto deliver = [watch](Card card) {
+    auto deliver = [&watch](Card card) {
+        // Backpressure: the main dispatcher queue is unbounded, so wait while it holds too many of our cards
+        while (watch->pending > MAX_PENDING_CARDS && !watch->stopping) {
+            tt::kernel::delayMillis(50);
+        }
+        if (watch->stopping) return;
+        watch->pending++;
         tt::getMainDispatcher().dispatch([watch, card = std::move(card)] {
             // unwatch() runs with the LVGL lock held, so checking under the lock is race-free
             if (tt::lvgl::lock(portMAX_DELAY)) {
@@ -371,6 +396,7 @@ int32_t BridgeClient::runWatch(const std::shared_ptr<Watch>& watch) {
                 }
                 tt::lvgl::unlock();
             }
+            watch->pending--;
         });
     };
 
@@ -388,17 +414,7 @@ int32_t BridgeClient::runWatch(const std::shared_ptr<Watch>& watch) {
                     setStatus(Status::Ok);
                 }
                 reader.feed(chunk, [&](SseEvent event) {
-                    if (event.type == SseEvent::Type::Oversize) {
-                        // Local card: seq 0 so it never moves afterSeq
-                        Card card;
-                        card.kind = CardKind::Error;
-                        card.title = "card too large";
-                        deliver(std::move(card));
-                    } else if (auto card = parseCard(event.data)) {
-                        // A lower unresolved seq means the bridge restarted and numbering began again
-                        if (card->seq > watch->afterSeq || !card->resolved) {
-                            watch->afterSeq = card->seq;
-                        }
+                    if (auto card = cardFromEvent(event, watch->afterSeq)) {
                         deliver(std::move(*card));
                     }
                 });
@@ -412,7 +428,11 @@ int32_t BridgeClient::runWatch(const std::shared_ptr<Watch>& watch) {
                 setLastError(errorMessage(401, {}));
                 break; // no retry until watch() is called again
             }
-            if (status == 0) {
+            if (status == 404) {
+                setLastError("Session not found");
+                break;
+            }
+            if (status == 0 || status >= 500) {
                 setStatus(Status::Offline);
             }
         }

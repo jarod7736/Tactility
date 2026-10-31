@@ -3,6 +3,7 @@
 #include <agents/BridgeClient.h>
 #include <agents/HttpClient.h>
 
+#include <Tactility/Tactility.h>
 #include <Tactility/kernel/Kernel.h>
 
 #include <arpa/inet.h>
@@ -245,6 +246,26 @@ TEST_CASE("openStream returns false on 401") {
     CHECK_EQ(client.lastStatus(), 401);
 }
 
+TEST_CASE("abortStream interrupts a pending connect") {
+    // Non-routable address: the SYN gets no answer, so connect stays pending for the 5 s timeout.
+    HttpClient client("10.255.255.1", 8765, "abc");
+    std::atomic<long long> elapsedMs { -1 };
+    std::thread streamer([&] {
+        // Off the FreeRTOS tick signals, so select() is not cut short by EINTR
+        sigset_t all;
+        sigfillset(&all);
+        pthread_sigmask(SIG_BLOCK, &all, nullptr);
+        auto start = std::chrono::steady_clock::now();
+        client.openStream("/s", [](std::string_view) { return true; });
+        elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    client.abortStream();
+    streamer.join();
+    CHECK_GE(elapsedMs.load(), 150);
+    CHECK_LT(elapsedMs.load(), 500);
+}
+
 // endregion
 
 // region BridgeClient
@@ -377,6 +398,68 @@ TEST_CASE("BridgeClient: bridge down is Offline") {
     configureLocal(client, port);
     CHECK(client.sessions("hermes").empty());
     CHECK(client.status() == BridgeClient::Status::Offline);
+    CHECK_EQ(std::string(client.statusMessage()), "Bridge offline, retrying");
+}
+
+TEST_CASE("BridgeClient: a 5xx response is Offline") {
+    CannedServer server({ { jsonResponse(502, "{\"detail\":\"backend unreachable\"}", "Bad Gateway") } });
+    BridgeClient client;
+    configureLocal(client, server.port);
+    CHECK(client.sessions("hermes").empty());
+    CHECK(client.status() == BridgeClient::Status::Offline);
+    CHECK_EQ(client.lastError(), "Backend unreachable");
+}
+
+TEST_CASE("BridgeClient: 404 on the stream sets Session not found and does not retry") {
+    CannedServer server({ { jsonResponse(404, "{\"detail\":\"not found\"}", "Not Found") } });
+    BridgeClient client;
+    configureLocal(client, server.port);
+    client.watch("hermes", "gone", 0, [](const Card&) {});
+    tt::kernel::delayMillis(2500); // past the first two backoff delays (1 s, 2 s would retry by 3 s)
+    CHECK_EQ(server.accepted.load(), 1);
+    CHECK_EQ(client.lastError(), "Session not found");
+    client.unwatch();
+}
+
+TEST_CASE("BridgeClient: 5xx on the stream sets Offline and keeps retrying") {
+    CannedServer server({ { jsonResponse(503, "{}", "Unavailable") } });
+    BridgeClient client;
+    configureLocal(client, server.port);
+    client.watch("hermes", "s1", 0, [](const Card&) {});
+    tt::kernel::delayMillis(1600); // first backoff is 1 s
+    CHECK(client.status() == BridgeClient::Status::Offline);
+    CHECK_GE(server.accepted.load(), 2);
+    client.unwatch();
+}
+
+TEST_CASE("BridgeClient: unwatch interrupts a pending connect quickly") {
+    BridgeClient client;
+    // Non-routable address: the SYN gets no answer, so connect stays pending (or fails at once without a route)
+    client.configure(BridgeConfig { .host = "10.255.255.1", .port = 8765, .token = "abc" });
+    client.watch("hermes", "s1", 0, [](const Card&) {});
+    tt::kernel::delayMillis(300);
+    auto start = std::chrono::steady_clock::now();
+    client.unwatch();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start);
+    CHECK_LT(elapsed.count(), 500);
+}
+
+TEST_CASE("BridgeClient: delivery backpressure holds at most 7 queued cards") {
+    std::string events;
+    for (int seq = 1; seq <= 12; seq++) {
+        events += "data: {\"seq\":" + std::to_string(seq) + ",\"kind\":\"text\"}\n\n";
+    }
+    CannedServer server({ { "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n" + events } });
+    BridgeClient client;
+    configureLocal(client, server.port);
+    auto& dispatcher = tt::getMainDispatcher();
+    while (dispatcher.consume(0) > 0) {} // drain anything left by earlier tests
+    client.watch("hermes", "s1", 0, [](const Card&) {});
+    tt::kernel::delayMillis(400);
+    CHECK_EQ(dispatcher.consume(0), 7); // the SSE task stops at 7 pending
+    tt::kernel::delayMillis(400);
+    CHECK_EQ(dispatcher.consume(0), 5); // the rest once the queue drained
+    client.unwatch();
 }
 
 // endregion
@@ -429,8 +512,47 @@ TEST_CASE("nextBackoffSeconds: 1, 2, 4, 8, then 15") {
     CHECK_EQ(nextBackoffSeconds(100), 15);
 }
 
+TEST_CASE("cardFromEvent: Oversize is a local Error card and leaves afterSeq unchanged") {
+    int after = 5;
+    auto card = cardFromEvent(SseEvent { SseEvent::Type::Oversize, {} }, after);
+    REQUIRE(card.has_value());
+    CHECK(card->local);
+    CHECK(card->kind == CardKind::Error);
+    CHECK_EQ(card->title, "card too large");
+    CHECK_EQ(after, 5);
+}
+
+TEST_CASE("cardFromEvent: afterSeq tracking") {
+    int after = 5;
+    auto data = [](const char* json) { return SseEvent { SseEvent::Type::Data, json }; };
+    SUBCASE("newer card advances") {
+        auto card = cardFromEvent(data("{\"seq\":6,\"kind\":\"text\"}"), after);
+        REQUIRE(card.has_value());
+        CHECK_FALSE(card->local);
+        CHECK_EQ(after, 6);
+    }
+    SUBCASE("seq 0 gap card is delivered but does not move afterSeq") {
+        auto card = cardFromEvent(data("{\"seq\":0,\"kind\":\"step\",\"title\":\"Skipped\"}"), after);
+        REQUIRE(card.has_value());
+        CHECK_EQ(card->seq, 0);
+        CHECK_EQ(after, 5);
+    }
+    SUBCASE("resolved update for an older card does not move afterSeq") {
+        REQUIRE(cardFromEvent(data("{\"seq\":3,\"kind\":\"approval\",\"resolved\":true}"), after).has_value());
+        CHECK_EQ(after, 5);
+    }
+    SUBCASE("lower unresolved seq (bridge restart) resets afterSeq") {
+        REQUIRE(cardFromEvent(data("{\"seq\":1,\"kind\":\"user\"}"), after).has_value());
+        CHECK_EQ(after, 1);
+    }
+    SUBCASE("invalid JSON yields nothing") {
+        CHECK_FALSE(cardFromEvent(data("{"), after).has_value());
+        CHECK_EQ(after, 5);
+    }
+}
+
 TEST_CASE("errorMessage") {
-    CHECK_EQ(errorMessage(0, ""), "Bridge offline");
+    CHECK_EQ(errorMessage(0, ""), "Bridge offline, retrying");
     CHECK_EQ(errorMessage(401, ""), "Check bridge.properties");
     CHECK_EQ(errorMessage(409, "{\"error\":\"run_in_progress\"}"), "Run in progress");
     CHECK_EQ(errorMessage(502, "{\"detail\":\"backend unreachable\"}"), "Backend unreachable");

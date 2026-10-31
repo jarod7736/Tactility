@@ -16,6 +16,7 @@ namespace agents {
 namespace {
 
 constexpr int CONNECT_TIMEOUT_SECONDS = 5;
+constexpr int CONNECT_SLICE_MS = 100;
 constexpr int REQUEST_TIMEOUT_SECONDS = 10;
 constexpr int STREAM_TIMEOUT_SECONDS = 30; // keepalives arrive every 15 s
 constexpr size_t MAX_HEAD = 1024;
@@ -157,15 +158,18 @@ int HttpClient::connectSocket(int receiveTimeoutSeconds) const {
             close(fd);
             return -1;
         }
-        int ready;
-        do {
+        // Wait in short slices so abortStream() can cut a pending connect short
+        int ready = 0;
+        for (int slice = 0; slice < CONNECT_TIMEOUT_SECONDS * 1000 / CONNECT_SLICE_MS && ready == 0; slice++) {
+            if (streamAborted_) break;
             fd_set writable;
             FD_ZERO(&writable);
             FD_SET(fd, &writable);
             timeval timeout {};
-            timeout.tv_sec = CONNECT_TIMEOUT_SECONDS;
+            timeout.tv_usec = CONNECT_SLICE_MS * 1000;
             ready = select(fd + 1, nullptr, &writable, nullptr, &timeout);
-        } while (ready < 0 && errno == EINTR);
+            if (ready < 0 && errno == EINTR) ready = 0;
+        }
         int socketError = 0;
         socklen_t length = sizeof(socketError);
         if (ready <= 0 || getsockopt(fd, SOL_SOCKET, SO_ERROR, &socketError, &length) != 0 || socketError != 0) {

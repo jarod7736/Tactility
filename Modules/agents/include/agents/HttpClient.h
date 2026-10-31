@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -38,7 +39,8 @@ public:
      *  Returns false if the connection failed or the status was not 200 (see lastStatus()). */
     bool openStream(std::string_view path, const std::function<bool(std::string_view chunk)>& onChunk);
 
-    /** Unblock a running openStream() from another thread. */
+    /** Unblock a running openStream() (including a pending connect) from another thread. The client then
+     *  refuses further streams. */
     void abortStream();
 
     /** HTTP status of the last request()/openStream(), or 0 when no response was received. */
@@ -55,7 +57,7 @@ private:
 
     std::mutex streamMutex_;
     int streamFd_ = -1;
-    bool streamAborted_ = false;
+    std::atomic<bool> streamAborted_ { false };
 };
 
 /** Quote and escape text as a JSON string literal. UTF-8 passes through unchanged. */
