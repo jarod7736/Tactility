@@ -224,3 +224,97 @@ TEST_CASE("setCapacity larger keeps cards") {
     CHECK(w.size() == 10);
     CHECK(w.oldestSeq() == 3);
 }
+
+TEST_CASE("prependOlder on empty window puts cursor on newest prepended card") {
+    CardWindow w;
+    w.prependOlder(range(1, 3));
+    CHECK(w.size() == 3);
+    CHECK(w.current()->seq == 3);
+    CHECK(w.position() == 3);
+    CHECK(w.followingLatest());
+    CHECK_FALSE(w.detached());
+}
+
+TEST_CASE("prependOlder dropping newest cards detaches the window") {
+    CardWindow w(5);
+    for (int i = 10; i <= 14; i++) w.apply(mk(i));
+    for (int i = 0; i < 4; i++) CHECK(w.prev());
+    w.prependOlder(range(8, 9));
+    CHECK(w.detached());
+    CHECK_FALSE(w.followingLatest());
+    CHECK(w.pendingNew() == 0);
+}
+
+TEST_CASE("prependOlder without dropping newest does not detach") {
+    CardWindow w;
+    for (int i = 10; i <= 12; i++) w.apply(mk(i));
+    w.prependOlder(range(7, 9));
+    CHECK_FALSE(w.detached());
+}
+
+TEST_CASE("detached window ignores new seqs and counts them, still updates") {
+    CardWindow w(5);
+    for (int i = 10; i <= 14; i++) w.apply(mk(i));
+    for (int i = 0; i < 4; i++) CHECK(w.prev());
+    w.prependOlder(range(8, 9));  // lastSeq now 12
+    CHECK(w.apply(mk(15)) == CardWindow::Change::Ignored);
+    CHECK(w.apply(mk(16)) == CardWindow::Change::Ignored);
+    CHECK(w.pendingNew() == 2);
+    CHECK(w.size() == 5);
+    CHECK(w.lastSeq() == 12);
+    CHECK(w.apply(mk(11, true)) == CardWindow::Change::Updated);
+    CHECK(w.pendingNew() == 2);
+    // even at the last card, a detached window is not following latest
+    while (w.next()) {}
+    CHECK_FALSE(w.followingLatest());
+}
+
+TEST_CASE("clear resets detached state") {
+    CardWindow w(5);
+    for (int i = 10; i <= 14; i++) w.apply(mk(i));
+    for (int i = 0; i < 4; i++) CHECK(w.prev());
+    w.prependOlder(range(8, 9));
+    w.apply(mk(15));
+    w.clear();
+    CHECK(w.size() == 0);
+    CHECK(w.current() == nullptr);
+    CHECK(w.position() == 0);
+    CHECK_FALSE(w.detached());
+    CHECK(w.pendingNew() == 0);
+    CHECK(w.apply(mk(1)) == CardWindow::Change::Appended);
+}
+
+TEST_CASE("Reset clears detached state") {
+    CardWindow w(5);
+    for (int i = 10; i <= 14; i++) w.apply(mk(i));
+    for (int i = 0; i < 4; i++) CHECK(w.prev());
+    w.prependOlder(range(8, 9));
+    w.apply(mk(15));
+    CHECK(w.apply(mk(1)) == CardWindow::Change::Reset);
+    CHECK_FALSE(w.detached());
+    CHECK(w.pendingNew() == 0);
+    CHECK(w.apply(mk(2)) == CardWindow::Change::Appended);
+}
+
+TEST_CASE("stale resolved update below oldest is ignored") {
+    CardWindow w;
+    for (int i = 10; i <= 12; i++) w.apply(mk(i));
+    CHECK(w.apply(mk(5, true)) == CardWindow::Change::Ignored);
+    CHECK(w.size() == 3);
+    CHECK(w.oldestSeq() == 10);
+}
+
+TEST_CASE("unresolved seq below oldest is a bridge restart") {
+    CardWindow w;
+    for (int i = 10; i <= 12; i++) w.apply(mk(i));
+    CHECK(w.apply(mk(5)) == CardWindow::Change::Reset);
+    CHECK(w.size() == 1);
+}
+
+TEST_CASE("missing seq inside the window is ignored") {
+    CardWindow w;
+    w.apply(mk(10));
+    w.apply(mk(12));
+    CHECK(w.apply(mk(11)) == CardWindow::Change::Ignored);
+    CHECK(w.size() == 2);
+}
