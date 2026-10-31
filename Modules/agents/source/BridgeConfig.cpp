@@ -1,9 +1,8 @@
 #include "agents/BridgeConfig.h"
 
-#include <Tactility/file/PropertiesFile.h>
+#include <Tactility/file/File.h>
 
 #include <charconv>
-#include <map>
 
 namespace agents {
 
@@ -56,6 +55,10 @@ static std::expected<BridgeConfig, ConfigError> makeConfig(std::string_view url,
 }
 
 std::expected<BridgeConfig, ConfigError> parseBridgeConfig(std::string_view propertiesText) {
+    // Editors on Windows may save with a UTF-8 byte order mark
+    if (propertiesText.starts_with("\xEF\xBB\xBF")) {
+        propertiesText.remove_prefix(3);
+    }
     std::string_view url, token;
     while (!propertiesText.empty()) {
         auto newline = propertiesText.find('\n');
@@ -78,11 +81,14 @@ std::expected<BridgeConfig, ConfigError> parseBridgeConfig(std::string_view prop
 }
 
 std::expected<BridgeConfig, ConfigError> loadBridgeConfig() {
-    std::map<std::string, std::string> properties;
-    if (!tt::file::loadPropertiesFile(BRIDGE_CONFIG_PATH, properties)) {
+    std::unique_ptr<uint8_t[]> text;
+    tt::file::getLock(BRIDGE_CONFIG_PATH)->withLock([&text] {
+        text = tt::file::readString(BRIDGE_CONFIG_PATH);
+    });
+    if (text == nullptr) {
         return std::unexpected(ConfigError::Missing);
     }
-    return makeConfig(properties["url"], properties["token"]);
+    return parseBridgeConfig(reinterpret_cast<const char*>(text.get()));
 }
 
 const char* toMessage(ConfigError error) {

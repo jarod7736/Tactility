@@ -55,3 +55,36 @@ TEST_CASE("toMessage gives the user-facing text") {
     CHECK_EQ(std::string(toMessage(ConfigError::NoToken)), "Check bridge.properties: token missing");
     CHECK_EQ(std::string(toMessage(ConfigError::BadUrl)), "Check bridge.properties: url must be http://host:port");
 }
+
+TEST_CASE("parseBridgeConfig strips a UTF-8 byte order mark") {
+    auto config = parseBridgeConfig("\xEF\xBB\xBFurl=http://192.168.1.118:8765\r\ntoken=abc\r\n");
+    REQUIRE(config.has_value());
+    CHECK_EQ(config->host, "192.168.1.118");
+    CHECK_EQ(config->port, 8765);
+    CHECK_EQ(config->token, "abc");
+}
+
+TEST_CASE("parseBridgeConfig rejects https://") {
+    CHECK_EQ(parseBridgeConfig("url=https://192.168.1.118:8765\ntoken=abc\n").error(), ConfigError::BadUrl);
+}
+
+TEST_CASE("parseBridgeConfig accepts a trailing slash") {
+    auto config = parseBridgeConfig("url=http://192.168.1.118:8765/\ntoken=abc\n");
+    REQUIRE(config.has_value());
+    CHECK_EQ(config->host, "192.168.1.118");
+    CHECK_EQ(config->port, 8765);
+}
+
+TEST_CASE("parseBridgeConfig uses the last value of a duplicate key") {
+    auto config = parseBridgeConfig("url=http://a:1\ntoken=old\nurl=http://b:2\ntoken=new\n");
+    REQUIRE(config.has_value());
+    CHECK_EQ(config->host, "b");
+    CHECK_EQ(config->port, 2);
+    CHECK_EQ(config->token, "new");
+}
+
+TEST_CASE("parseBridgeConfig keeps '=' inside the token") {
+    auto config = parseBridgeConfig("url=http://a:1\ntoken=abc==\n");
+    REQUIRE(config.has_value());
+    CHECK_EQ(config->token, "abc==");
+}
