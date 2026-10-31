@@ -1,4 +1,5 @@
 #include <Tactility/Tactility.h>
+#include <agents/AgentApps.h>
 #include <agents/BridgeClient.h>
 
 #include <tactility/driver.h>
@@ -22,7 +23,8 @@ void app_main() {
          * that you copied to ./sdkconfig before you opened this project.
          */
         .hardware = &hardwareConfiguration,
-        .services = { &agents::bridgeClientManifest }
+        .services = { &agents::bridgeClientManifest },
+        .apps = { &agents::hermesAppManifest, &agents::openCodeAppManifest }
     };
 
 #ifdef ESP_PLATFORM

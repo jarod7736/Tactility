@@ -206,6 +206,9 @@ static void registerInternalApps() {
     addAppManifest(app::btmanage::manifest);
     addAppManifest(app::btpeersettings::manifest);
 #endif
+    for (const auto* manifest : config_instance->apps) {
+        addAppManifest(*manifest);
+    }
 }
 
 static void registerInstalledApp(std::string path) {

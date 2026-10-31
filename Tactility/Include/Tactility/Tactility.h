@@ -23,6 +23,8 @@ struct Configuration {
     const hal::Configuration* hardware = nullptr;
     /** Extra services from modules outside Tactility, started after the system UI services */
     std::vector<const service::ServiceManifest*> services = {};
+    /** Extra apps from modules outside Tactility, registered with the internal apps */
+    std::vector<const app::AppManifest*> apps = {};
 };
 
 /**
