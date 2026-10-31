@@ -95,6 +95,7 @@ if (NOT DEFINED ENV{ESP_IDF_VERSION})
     add_subdirectory(Libraries/minmea)
     add_subdirectory(Modules/hal-device-module)
     add_subdirectory(Modules/lvgl-module)
+    add_subdirectory(Modules/agents)
 
     # FreeRTOS
     set(FREERTOS_CONFIG_FILE_DIRECTORY ${PROJECT_SOURCE_DIR}/Devices/simulator/Source CACHE STRING "")

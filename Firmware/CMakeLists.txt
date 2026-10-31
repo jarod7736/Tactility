@@ -67,6 +67,7 @@ endif ()
 list(APPEND REQUIRES_LIST
     Tactility
     TactilityKernel
+    agents
 )
 
 # Add devicetree dependencies
@@ -101,16 +102,22 @@ endif ()
 # Devicetree code generation
 #
 
-add_custom_target(AlwaysRun
+# AlwaysRun is a symbolic file that is never created, so it is out of date on every build.
+# devicetree.c depends on it as a file (not only as an ordering target), so ninja regenerates
+# devicetree.c after AlwaysRun deletes it instead of compiling a file that no longer exists.
+set(ALWAYS_RUN "${GENERATED_DIR}/AlwaysRun")
+add_custom_command(
+    OUTPUT "${ALWAYS_RUN}"
     COMMAND ${CMAKE_COMMAND} -E rm -f "${GENERATED_DIR}/devicetree.c"
 )
+set_source_files_properties("${ALWAYS_RUN}" PROPERTIES SYMBOLIC TRUE)
 add_custom_command(
     OUTPUT "${GENERATED_DIR}/devicetree.c"
         "${GENERATED_DIR}/devicetree.h"
     COMMAND python "${CMAKE_SOURCE_DIR}/Buildscripts/DevicetreeCompiler/compile.py"
         "${DEVICETREE_LOCATION}" "${GENERATED_DIR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
-    DEPENDS AlwaysRun "${DEVICETREE_LOCATION}/devicetree.yaml" # AlwaysRun ensures it always gets built
+    DEPENDS "${ALWAYS_RUN}" "${DEVICETREE_LOCATION}/devicetree.yaml" # AlwaysRun ensures it always gets built
     COMMENT "Generating devicetree source files..."
 )
 add_custom_target(Generated DEPENDS "${GENERATED_DIR}/devicetree.c")
