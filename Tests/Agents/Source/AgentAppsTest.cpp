@@ -115,6 +115,19 @@ TEST_CASE("footer hints per card kind") {
     CHECK(footerHint(&qr) == "resolved");
     Card text = mk(1, CardKind::Text);
     CHECK(footerHint(&text) == "[P] prompt [S] stop");
+    Card user = mk(2, CardKind::User);
+    CHECK(footerHint(&user) == "[E] edit [P] prompt [S] stop");
+}
+
+TEST_CASE("card keys: edit a user card") {
+    Card user = mk(2, CardKind::User);
+    CHECK(cardKeyAction('e', &user, false).action == CardAction::Edit);
+    CHECK(cardKeyAction('E', &user, true).action == CardAction::Edit);
+    Card text = mk(1, CardKind::Text);
+    CHECK(cardKeyAction('e', &text, false).action == CardAction::None);
+    CHECK(cardKeyAction('e', nullptr, true).action == CardAction::None);
+    CHECK(cardKeyBlocked(CardAction::Edit, true, false));
+    CHECK_FALSE(cardKeyBlocked(CardAction::Edit, false, true));
 }
 
 TEST_CASE("card banner priority") {

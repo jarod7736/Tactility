@@ -93,6 +93,7 @@ std::string footerHint(const Card* card) {
         if (count == 1) return "[1] pick [T] type";
         return std::format("[1-{}] pick [T] type", count);
     }
+    if (card->kind == CardKind::User) return "[E] edit [P] prompt [S] stop";
     return "[P] prompt [S] stop";
 }
 
@@ -120,6 +121,7 @@ CardKey cardKeyAction(uint32_t key, const Card* card, bool followingLatest) {
     }
     if (card == nullptr || card->resolved || key > 0x7F) return {};
     char c = static_cast<char>(std::toupper(static_cast<int>(key)));
+    if (card->kind == CardKind::User && c == 'E') return { CardAction::Edit, {} };
     if (card->kind == CardKind::Approval) {
         if (approvalWord(c) == nullptr) return {};
         if (auto* option = findOption(*card, c)) return { CardAction::Respond, std::string(1, option->key) };
@@ -135,6 +137,7 @@ CardKey cardKeyAction(uint32_t key, const Card* card, bool followingLatest) {
 bool cardKeyBlocked(CardAction action, bool dialogPending, bool respondInFlight) {
     switch (action) {
         case CardAction::Prompt:
+        case CardAction::Edit:
         case CardAction::TypeAnswer:
         case CardAction::Stop:
             return dialogPending;
@@ -334,6 +337,10 @@ void handleCardKey(const StatePtr& state, uint32_t key) {
         case CardAction::Prompt:
             state->dialog = AgentState::Dialog::Prompt;
             tt::app::inputdialog::start("Prompt", std::format("{}: {}", state->name, state->session.title));
+            break;
+        case CardAction::Edit:
+            state->dialog = AgentState::Dialog::Prompt;
+            tt::app::inputdialog::start("Prompt", std::format("{}: {}", state->name, state->session.title), current->body);
             break;
         case CardAction::Stop:
             state->dialog = AgentState::Dialog::Stop;

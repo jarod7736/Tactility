@@ -51,7 +51,7 @@ std::string footerHint(const Card* card);
 /** Banner text, or empty to hide it. Priority: toast, then bridge status, then the detached hint. */
 std::string cardBanner(bool statusOk, std::string_view statusMessage, std::string_view toast, bool detached, size_t pendingNew);
 
-enum class CardAction { None, Prev, Next, Back, Prompt, Stop, Respond, TypeAnswer };
+enum class CardAction { None, Prev, Next, Back, Prompt, Edit, Stop, Respond, TypeAnswer };
 
 struct CardKey {
     CardAction action = CardAction::None;
