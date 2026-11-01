@@ -5,7 +5,6 @@
 #include "agents/HttpClient.h"
 #include "agents/SseReader.h"
 
-#include <Tactility/Thread.h>
 #include <Tactility/service/Service.h>
 #include <Tactility/service/ServiceManifest.h>
 
@@ -100,7 +99,6 @@ private:
     int8_t statusbarIcon_ = -1;
 
     std::shared_ptr<Watch> watch_;
-    std::unique_ptr<tt::Thread> watchThread_;
 };
 
 /** Manifest for the "BridgeClient" service (registered via tt::Configuration::services). */

@@ -3,6 +3,8 @@
 #include "agents/SseReader.h"
 
 #include <Tactility/Tactility.h>
+#include <Tactility/freertoscompat/Semaphore.h>
+#include <Tactility/freertoscompat/Task.h>
 #include <Tactility/kernel/Kernel.h>
 #include <Tactility/lvgl/LvglSync.h>
 #include <Tactility/lvgl/Statusbar.h>
@@ -186,7 +188,9 @@ std::string errorMessage(int status, std::string_view body) {
 
 struct BridgeClient::Watch {
     Watch(const BridgeConfig& config, std::string path, int afterSeq, std::function<void(const Card&)> onCard) :
-        client(config.host, config.port, config.token), path(std::move(path)), afterSeq(afterSeq), onCard(std::move(onCard)) {}
+        client(config.host, config.port, config.token), path(std::move(path)), afterSeq(afterSeq), onCard(std::move(onCard)),
+        done(xSemaphoreCreateBinary()) {}
+    ~Watch() { vSemaphoreDelete(done); }
 
     HttpClient client;
     std::string path; // without the after= value
@@ -194,6 +198,7 @@ struct BridgeClient::Watch {
     std::function<void(const Card&)> onCard;
     std::atomic<bool> stopping { false };
     std::atomic<int> pending { 0 }; // cards dispatched but not yet run on the main task
+    SemaphoreHandle_t done; // given when the stream task is about to exit
 };
 
 BridgeClient::~BridgeClient() {
@@ -371,16 +376,29 @@ void BridgeClient::watch(const std::string& backend, const std::string& sid, int
         std::move(onCard)
     );
     auto watch = watch_;
-    watchThread_ = std::make_unique<tt::Thread>("bridge_sse", WATCH_STACK_SIZE, [this, watch] { return runWatch(watch); });
-    watchThread_->start();
+    // A plain FreeRTOS task, not tt::Thread: tt::Thread keeps its self pointer in task-local storage slot 0,
+    // which is also where ESP-IDF keeps pthread keys, and lwIP finds its per-thread semaphore through those
+    // (getaddrinfo in a tt::Thread hangs on a bogus semaphore).
+    using Args = std::pair<BridgeClient*, std::shared_ptr<Watch>>;
+    auto* args = new Args(this, watch);
+    auto task = [](void* param) {
+        auto* args = static_cast<Args*>(param);
+        args->first->runWatch(args->second);
+        xSemaphoreGive(args->second->done);
+        delete args;
+        vTaskDelete(nullptr);
+    };
+    if (xTaskCreate(task, "bridge_sse", WATCH_STACK_SIZE / sizeof(StackType_t), args, 4, nullptr) != pdPASS) {
+        delete args;
+        watch_.reset();
+    }
 }
 
 void BridgeClient::unwatch() {
-    if (!watchThread_) return;
+    if (!watch_) return;
     watch_->stopping = true;
     watch_->client.abortStream();
-    watchThread_->join();
-    watchThread_.reset();
+    xSemaphoreTake(watch_->done, portMAX_DELAY);
     watch_.reset();
 }
 
