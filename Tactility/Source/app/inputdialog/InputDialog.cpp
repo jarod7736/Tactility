@@ -96,6 +96,7 @@ public:
         }
 
         auto* textarea = lv_textarea_create(parent);
+        lv_obj_set_width(textarea, LV_PCT(80)); // LVGL's default width is wider than small screens (240 px Cardputer)
         lv_obj_align_to(textarea, message_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
         lv_textarea_set_one_line(textarea, true);
         std::string prefilled;
